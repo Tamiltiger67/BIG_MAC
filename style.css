@@ -1,0 +1,22 @@
+body, html {
+    margin: 0; 
+    padding: 0; 
+    width: 100%; 
+    height: 100%;
+    overflow: hidden; 
+    background: #090101;
+    display: flex; 
+    justify-content: center; 
+    align-items: center;
+    font-family: 'Impact', 'Arial Black', sans-serif;
+    user-select: none;
+}
+
+canvas {
+    display: block;
+    image-rendering: pixelated;
+    background: #110302;
+    box-shadow: 0 0 40px rgba(234, 32, 39, 0.5);
+    border: 4px solid #2c0b07;
+    border-radius: 6px;
+}

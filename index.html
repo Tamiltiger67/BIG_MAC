@@ -3,19 +3,487 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Super Monkey Bros 3 - Premium Edition</title>
     <link rel="stylesheet" href="style.css">
-    <script src="script.js"></script>
-    <title>Index</title>
 </head>
 <body>
-     <header>
 
-     </header>
-     <main>
+    <canvas id="gameCanvas"></canvas>
 
-     </main>
-     <footer>
+    <script src="levels.js"></script>
+    
+    <script>
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
 
-     </footer>
+        const VIRTUAL_WIDTH = 640;
+        const VIRTUAL_HEIGHT = 400;
+        const TILE_SIZE = 32;
+        
+        function resizeCanvas() {
+            const scale = Math.min(window.innerWidth / VIRTUAL_WIDTH, window.innerHeight / VIRTUAL_HEIGHT);
+            canvas.width = VIRTUAL_WIDTH * scale;
+            canvas.height = VIRTUAL_HEIGHT * scale;
+            ctx.scale(scale, scale);
+        }
+        window.addEventListener("resize", resizeCanvas);
+
+        const STATES = { MENU: "MENU", PLAYING: "PLAYING", L_TRANSITION: "TRANSITION", DEATH: "DEATH", GAMEOVER: "GAMEOVER", WIN: "WIN" };
+        let currentState = STATES.MENU;
+
+        let currentLevel = 1; let score = 0; let lives = 3; let cameraX = 0; let transitionTimer = 0;
+        let globalAnimFrame = 0;
+
+        const SKINS = { NORMAL: "NORMAL", CYBER: "CYBER", FIRE: "FIRE" };
+        let selectedSkin = SKINS.NORMAL;
+
+        const POWERUPS = { NONE: "NONE", WATER: "WATER", FIRE: "FIRE", WIND: "WIND", GOLD: "GOLD" };
+        let currentPowerUp = POWERUPS.NONE;
+
+        const keys = {};
+        window.addEventListener("keydown", e => {
+            keys[e.code] = true;
+            if (currentState === STATES.MENU) {
+                if (e.code === "Digit1") selectedSkin = SKINS.NORMAL;
+                if (e.code === "Digit2") selectedSkin = SKINS.CYBER;
+                if (e.code === "Digit3") selectedSkin = SKINS.FIRE;
+                if (e.code === "Space") startGame();
+            } else {
+                if (e.code === "Space") {
+                    if (currentState === STATES.DEATH) respawn();
+                    if (currentState === STATES.GAMEOVER || currentState === STATES.WIN) resetToMenu();
+                }
+                if ((e.code === "KeyE" || e.code === "KeyX") && (currentPowerUp === POWERUPS.FIRE || currentPowerUp === POWERUPS.GOLD)) {
+                    shootPlayerFireball();
+                }
+            }
+        });
+        window.addEventListener("keyup", e => { keys[e.code] = false; });
+
+        // --- DER PREMIUM SPIELER (MIT NEUER LAUF- & SPRUNG-ANIMATION) ---
+        const player = {
+            x: 60, y: 100, vx: 0, vy: 0, width: 24, height: 24,
+            isGrounded: false, speed: 4.5, jumpForce: -13, direction: 1, hitTimer: 0,
+            animTimer: 0,
+
+            update() {
+                let isMoving = false;
+                if (keys.ArrowRight || keys.KeyD) { this.vx += 0.5; this.direction = 1; isMoving = true; }
+                else if (keys.ArrowLeft || keys.KeyA) { this.vx -= 0.5; this.direction = -1; isMoving = true; }
+                else { this.vx *= 0.72; }
+
+                if (this.vx > this.speed) this.vx = this.speed;
+                if (this.vx < -this.speed) this.vx = -this.speed;
+
+                if (isMoving && this.isGrounded) {
+                    this.animTimer += 0.2; 
+                } else if (!this.isGrounded) {
+                    this.animTimer = 0; 
+                } else {
+                    this.animTimer = 0; 
+                }
+
+                // Wind/Gold Power-Up Gleitflug
+                if ((keys.Space || keys.ArrowUp || keys.KeyW) && this.vy > 0 && (currentPowerUp === POWERUPS.WIND || currentPowerUp === POWERUPS.GOLD)) {
+                    this.vy = 0.5; 
+                } else {
+                    this.vy += 0.7;
+                }
+
+                if ((keys.Space || keys.ArrowUp || keys.KeyW) && this.isGrounded) {
+                    this.vy = this.jumpForce; this.isGrounded = false;
+                }
+
+                if (this.hitTimer > 0) this.hitTimer--;
+
+                this.x += this.vx; this.checkTileCollision("x");
+                this.y += this.vy; this.isGrounded = false; this.checkTileCollision("y");
+
+                if (this.x < cameraX) { this.x = cameraX; this.vx = 0; }
+                if (this.y > VIRTUAL_HEIGHT) { currentPowerUp = POWERUPS.NONE; playerDie(); }
+            },
+
+            takeDamage() {
+                if (this.hitTimer > 0) return;
+                if (currentPowerUp === POWERUPS.WATER || currentPowerUp === POWERUPS.GOLD) {
+                    currentPowerUp = POWERUPS.NONE; this.hitTimer = 60;
+                } else if (currentPowerUp !== POWERUPS.NONE) {
+                    currentPowerUp = POWERUPS.NONE; this.hitTimer = 40;
+                } else {
+                    playerDie();
+                }
+            },
+
+            checkTileCollision(axis) {
+                const map = LEVEL_DATA[currentLevel];
+                if (!map) return;
+                for (let r = 0; r < map.length; r++) {
+                    for (let c = 0; c < map[r].length; c++) {
+                        if (map[r][c] !== "1" && map[r][c] !== "5") continue;
+                        const tx = c * TILE_SIZE; const ty = r * TILE_SIZE;
+                        if (this.x < tx + TILE_SIZE && this.x + this.width > tx && this.y < ty + TILE_SIZE && this.y + this.height > ty) {
+                            if (map[r][c] === "5") {
+                                if (currentLevel === 10 && !boss.dead) continue;
+                                triggerLevelTransition(); return;
+                            }
+                            if (axis === "x") {
+                                if (this.vx > 0) this.x = tx - this.width;
+                                if (this.vx < 0) this.x = tx + TILE_SIZE;
+                                this.vx = 0;
+                            } else {
+                                if (this.vy > 0) { this.y = ty - this.height; this.vy = 0; this.isGrounded = true; }
+                                else if (this.vy < 0) { this.y = ty + TILE_SIZE; this.vy = 0; }
+                            }
+                        }
+                    }
+                }
+            },
+
+            draw() {
+                if (this.hitTimer > 0 && Math.floor(globalAnimFrame / 4) % 2 === 0) return;
+                ctx.save();
+                ctx.translate(this.x - cameraX, this.y);
+                if (this.direction === -1) { ctx.scale(-1, 1); ctx.translate(-this.width, 0); }
+
+                let mainColor = "#844216"; let faceColor = "#ffcca3";
+                if (selectedSkin === SKINS.CYBER) { mainColor = "#00d2d3"; faceColor = "#fff"; }
+                if (selectedSkin === SKINS.FIRE) { mainColor = "#ff4d4d"; faceColor = "#ffbe76"; }
+                if (currentPowerUp === POWERUPS.GOLD) { mainColor = "#ffd700"; faceColor = "#fff3a8"; }
+
+                if (currentPowerUp !== POWERUPS.NONE) {
+                    ctx.shadowBlur = 15;
+                    ctx.shadowColor = currentPowerUp === POWERUPS.WATER ? "#2e86de" : currentPowerUp === POWERUPS.FIRE ? "#ee5253" : currentPowerUp === POWERUPS.WIND ? "#00d2d3" : "#ffd700";
+                }
+
+                // Berechne Animations-Phasen (Beine & Arme)
+                let legOffset = Math.sin(this.animTimer) * 4;
+                let armOffset = Math.cos(this.animTimer) * 3;
+
+                if (!this.isGrounded) { 
+                    // Sprung-Pose: Arme nach oben gestreckt!
+                    armOffset = -6;
+                    legOffset = 2;
+                }
+
+                // Ohren
+                ctx.fillStyle = mainColor; ctx.fillRect(0, 4, 4, 6); ctx.fillRect(20, 4, 4, 6);
+                // Hauptkörper
+                ctx.fillRect(3, 0, 18, 20);
+                // Gesicht
+                ctx.fillStyle = faceColor; ctx.fillRect(6, 4, 12, 10);
+                // Augen
+                ctx.fillStyle = "#000"; ctx.fillRect(8, 6, 2, 3); ctx.fillRect(14, 6, 2, 3);
+                // Mund & Bauchbehaarung
+                ctx.fillStyle = "#d35400"; if(currentPowerUp === POWERUPS.GOLD) ctx.fillStyle = "#fff";
+                ctx.fillRect(9, 11, 6, 2); ctx.fillRect(7, 15, 10, 5);
+
+                // dynamic Arme (Bewegen sich beim Laufen)
+                ctx.fillStyle = mainColor;
+                ctx.fillRect(0, 10 + armOffset, 3, 6);
+
+                // dynamic Beine (Lauf-Wechsel)
+                ctx.fillRect(4, 20, 5, 4 + legOffset);
+                ctx.fillRect(15, 20, 5, 4 - legOffset);
+
+                ctx.restore();
+            }
+        };
+
+        // --- DER GORILLA KÖNIG (BOSS) ---
+        const boss = {
+            x: 750, y: 64, width: 80, height: 96, attackTimer: 0, active: false, health: 6, maxHealth: 6, dead: false, walkDir: -1,
+            update() {
+                if (!this.active || this.dead) return;
+                this.attackTimer++;
+                this.x += this.walkDir * 1.5;
+                if (this.x < 500 || this.x > 1000) this.walkDir *= -1;
+
+                if (this.attackTimer > 45) { this.attackTimer = 0; this.shoot(); }
+
+                if (player.x < this.x + this.width && player.x + player.width > this.x && player.y < this.y + this.height && player.y + player.height > this.y) {
+                    if (player.vy > 0 && player.y + player.height - player.vy <= this.y + 20) {
+                        this.health--; player.vy = -12; if (this.health <= 0) this.dead = true;
+                    } else { player.takeDamage(); }
+                }
+            },
+            shoot() {
+                let sX = player.x < this.x ? -5 : 5;
+                enemyProjectiles.push({ x: this.x + 10, y: this.y + 30, vx: sX, vy: -1, isLava: true });
+            },
+            draw() {
+                if (!this.active || this.dead) return;
+                ctx.save();
+                ctx.shadowBlur = 25; ctx.shadowColor = "#ff4400";
+
+                ctx.fillStyle = "#3a1d11"; ctx.fillRect(this.x - cameraX, this.y, this.width, this.height);
+                ctx.fillStyle = "#e17055"; ctx.fillRect(this.x - cameraX + 15, this.y + 40, 50, 40);
+                ctx.fillStyle = "#1e1e1e"; ctx.fillRect(this.x - cameraX + 10, this.y + 10, 60, 25);
+                ctx.fillStyle = "#ff0000"; ctx.fillRect(this.x - cameraX + 20, this.y + 16, 10, 10); ctx.fillRect(this.x - cameraX + 50, this.y + 16, 10, 10);
+                ctx.fillStyle = "#fff"; ctx.fillRect(this.x - cameraX + 30, this.y + 30, 4, 5); ctx.fillRect(this.x - cameraX + 46, this.y + 30, 4, 5);
+
+                ctx.restore();
+            }
+        };
+
+        let enemies = []; let items = []; let playerProjectiles = []; let enemyProjectiles = [];
+
+        function shootPlayerFireball() {
+            playerProjectiles.push({ x: player.x + (player.direction === 1 ? 24 : -12), y: player.y + 8, vx: player.direction * 7, w: 10, h: 10 });
+        }
+
+        function spawnEntitiesForLevel() {
+            enemies = []; items = []; playerProjectiles = []; enemyProjectiles = [];
+            boss.active = (currentLevel === 10); boss.dead = false; boss.health = boss.maxHealth;
+
+            // Power-Ups SCHWEBEN jetzt sauber in der Luft (y=90) und stecken nicht im Boden!
+            if (currentLevel === 1 || currentLevel === 4 || currentLevel === 7) items.push({ x: 260, y: 90, type: POWERUPS.WATER, baseY: 90 });
+            if (currentLevel === 2 || currentLevel === 5 || currentLevel === 8) items.push({ x: 340, y: 90, type: POWERUPS.FIRE, baseY: 90 });
+            if (currentLevel === 3 || currentLevel === 6 || currentLevel === 9) items.push({ x: 280, y: 90, type: POWERUPS.WIND, baseY: 90 });
+            if (currentLevel === 10) items.push({ x: 200, y: 90, type: POWERUPS.GOLD, baseY: 90 });
+
+            // Dynamische Feinde auf dem Boden platziert (y=136)
+            if (currentLevel <= 3) {
+                enemies.push({ x: 380, y: 136, type: 1, vx: -1.5, w: 24, h: 24, timer: 0 });
+                enemies.push({ x: 680, y: 136, type: 1, vx: 1.5, w: 24, h: 24, timer: 0 });
+            } else if (currentLevel <= 6) {
+                enemies.push({ x: 300, y: 50, type: 2, vx: -2, w: 26, h: 20, timer: 0, startY: 50 });
+                enemies.push({ x: 550, y: 136, type: 1, vx: -1.5, w: 24, h: 24, timer: 0 });
+            } else if (currentLevel <= 9) {
+                enemies.push({ x: 400, y: 128, type: 3, vx: 0, w: 24, h: 32, timer: 0 });
+                enemies.push({ x: 650, y: 136, type: 4, vx: -2, vy: 0, w: 24, h: 24, timer: 0 });
+            } else if (currentLevel === 10) {
+                enemies.push({ x: 400, y: 136, type: 4, vx: -2.5, vy: 0, w: 24, h: 24, timer: 0 });
+            }
+        }
+
+        function updateEntities() {
+            playerProjectiles.forEach((p, pi) => {
+                p.x += p.vx;
+                enemies.forEach((e, ei) => {
+                    if (p.x < e.x + e.w && p.x + p.w > e.x && p.y < e.y + e.h && p.y + p.h > e.y) {
+                        enemies.splice(ei, 1); playerProjectiles.splice(pi, 1); score += 200;
+                    }
+                });
+                if (boss.active && !boss.dead && p.x < boss.x + boss.width && p.x + p.w > boss.x && p.y < boss.y + boss.height && p.y + p.h > boss.y) {
+                    boss.health--; playerProjectiles.splice(pi, 1); if(boss.health <= 0) boss.dead = true;
+                }
+            });
+
+            enemies.forEach((e, ei) => {
+                e.timer++;
+                if (e.type === 1) { e.x += e.vx; if (e.x < 100 || e.x > 900) e.vx *= -1; }
+                else if (e.type === 2) { e.x += e.vx; e.y = e.startY + Math.sin(e.timer * 0.08) * 25; if (e.x < 100 || e.x > 900) e.vx *= -1; }
+                else if (e.type === 3) { if (e.timer % 65 === 0) enemyProjectiles.push({ x: e.x, y: e.y + 4, vx: -4, vy: 0 }); }
+                else if (e.type === 4) { 
+                    e.x += e.vx; if (e.x < 150 || e.x > 900) e.vx *= -1;
+                    if (e.timer % 45 === 0 && e.vy === 0) e.vy = -8; e.vy += 0.4; e.y += e.vy;
+                    if (e.y > 136) { e.y = 136; e.vy = 0; }
+                }
+
+                if (player.x < e.x + e.w && player.x + player.width > e.x && player.y < e.y + e.h && player.y + player.height > e.y) {
+                    if (player.vy > 0 && player.y + player.height - player.vy <= e.y + 10) {
+                        player.vy = -9; score += 150; enemies.splice(ei, 1);
+                    } else { player.takeDamage(); }
+                }
+            });
+
+            enemyProjectiles.forEach((ep, epi) => {
+                ep.x += ep.vx; ep.y += ep.vy;
+                if (player.x < ep.x + 8 && player.x + player.width > ep.x && player.y < ep.y + 8 && player.y + player.height > ep.y) {
+                    player.takeDamage(); enemyProjectiles.splice(epi, 1);
+                }
+            });
+
+            // FIX: Sanfte Sinus-Schwebe-Animation für Items (Verhindert Steckenbleiben im Boden)
+            items.forEach((it, iti) => {
+                it.y = it.baseY + Math.sin(globalAnimFrame * 0.08) * 8;
+
+                if (player.x < it.x + 20 && player.x + player.width > it.x && player.y < it.y + 20 && player.y + player.height > it.y) {
+                    currentPowerUp = it.type; score += 500; items.splice(iti, 1);
+                }
+            });
+        }
+
+        function drawMap() {
+            const map = LEVEL_DATA[currentLevel];
+            if (!map) return;
+
+            for (let r = 0; r < map.length; r++) {
+                for (let c = 0; c < map[r].length; c++) {
+                    let tx = c * TILE_SIZE - cameraX; let ty = r * TILE_SIZE;
+                    if (map[r][c] === "1") {
+                        ctx.fillStyle = "#27120c"; ctx.fillRect(tx, ty, TILE_SIZE, TILE_SIZE);
+                        ctx.fillStyle = "#4a1c11"; ctx.fillRect(tx + 2, ty + 2, TILE_SIZE - 4, TILE_SIZE - 4);
+                        ctx.fillStyle = "#ff5500"; ctx.fillRect(tx + 6, ty + 12, 4, 4); ctx.fillRect(tx + 22, ty + 20, 6, 4);
+                    }
+                    if (map[r][c] === "5") {
+                        ctx.save(); ctx.shadowBlur = 10; ctx.shadowColor = "#f1c40f";
+                        ctx.fillStyle = "#f1c40f"; ctx.fillRect(tx + 4, ty, 24, TILE_SIZE);
+                        ctx.fillStyle = "#f39c12"; ctx.fillRect(tx + 8, ty + 4, 16, 24);
+                        ctx.fillStyle = "#2c3e50"; ctx.fillRect(tx + 13, ty + 10, 6, 8);
+                        ctx.restore();
+                    }
+                }
+            }
+        }
+
+        function drawEnemies() {
+            enemies.forEach(e => {
+                ctx.save();
+                if (e.type === 1) {
+                    ctx.fillStyle = "#e74c3c"; ctx.fillRect(e.x - cameraX, e.y, e.w, e.h);
+                    ctx.fillStyle = "#2c3e50"; ctx.fillRect(e.x - cameraX + 4, e.y - 4, 4, 4); ctx.fillRect(e.x - cameraX + 16, e.y - 4, 4, 4);
+                } else if (e.type === 2) {
+                    ctx.fillStyle = "#9b59b6"; ctx.fillRect(e.x - cameraX, e.y, e.w, e.h);
+                    ctx.fillStyle = "#8e44ad"; ctx.fillRect(e.x - cameraX - 4, e.y + 2, 4, 8); ctx.fillRect(e.x - cameraX + e.w, e.y + 2, 4, 8);
+                } else if (e.type === 3) {
+                    ctx.fillStyle = "#ecf0f1"; ctx.fillRect(e.x - cameraX, e.y, e.w, e.h);
+                    ctx.fillStyle = "#e67e22"; ctx.fillRect(e.x - cameraX + 4, e.y + 6, 16, 8);
+                } else if (e.type === 4) {
+                    ctx.fillStyle = "#d35400"; ctx.fillRect(e.x - cameraX, e.y, e.w, e.h);
+                    ctx.fillStyle = "#ffaa00"; ctx.fillRect(e.x - cameraX + 4, e.y + 4, 6, 6);
+                }
+                ctx.restore();
+            });
+
+            playerProjectiles.forEach(p => {
+                ctx.save(); ctx.shadowBlur = 8; ctx.shadowColor = "#ff7675";
+                ctx.fillStyle = "#ff7675"; ctx.beginPath(); ctx.arc(p.x - cameraX + 5, p.y + 5, 5, 0, Math.PI*2); ctx.fill();
+                ctx.restore();
+            });
+            enemyProjectiles.forEach(ep => {
+                ctx.fillStyle = ep.isLava ? "#ff3300" : "#ff7f50"; ctx.fillRect(ep.x - cameraX, ep.y, 8, 8);
+            });
+        }
+
+        function drawItems() {
+            items.forEach(it => {
+                ctx.save();
+                ctx.shadowBlur = 15;
+                if (it.type === POWERUPS.WATER) { ctx.shadowColor = "#0984e3"; ctx.fillStyle = "#0984e3"; }
+                if (it.type === POWERUPS.FIRE) { ctx.shadowColor = "#d63031"; ctx.fillStyle = "#d63031"; }
+                if (it.type === POWERUPS.WIND) { ctx.shadowColor = "#00cec9"; ctx.fillStyle = "#00cec9"; }
+                if (it.type === POWERUPS.GOLD) { ctx.shadowColor = "#fdcb6e"; ctx.fillStyle = "#fdcb6e"; }
+                
+                ctx.beginPath(); ctx.arc(it.x - cameraX + 10, it.y + 10, 9, 0, Math.PI*2); ctx.fill();
+                ctx.fillStyle = "#fff"; ctx.fillRect(it.x - cameraX + 7, it.y + 6, 4, 4);
+                ctx.restore();
+            });
+        }
+
+        function drawHUD() {
+            ctx.fillStyle = "rgba(10, 2, 2, 0.85)"; ctx.fillRect(0, 0, VIRTUAL_WIDTH, 40);
+            ctx.fillStyle = "#2c0b07"; ctx.fillRect(0, 38, VIRTUAL_WIDTH, 2);
+
+            ctx.fillStyle = "#fff"; ctx.font = "bold 14px 'Arial'"; ctx.textAlign = "left";
+            ctx.fillText(`MONKEY SCORE: ${String(score).padStart(6, '0')}`, 20, 24);
+            ctx.fillText(`WORLD ${currentLevel}-3`, 270, 24);
+            ctx.fillText(`LIVES x${lives}`, 520, 24);
+
+            if (boss.active && !boss.dead) {
+                ctx.fillStyle = "#ff4400"; ctx.fillText("BOSS HP: ", 220, 70);
+                for (let i = 0; i < boss.maxHealth; i++) {
+                    ctx.fillStyle = i < boss.health ? "#ff0000" : "#330000";
+                    ctx.fillRect(300 + (i * 22), 56, 16, 16);
+                    ctx.strokeStyle = "#fff"; ctx.strokeRect(300 + (i * 22), 56, 16, 16);
+                }
+            }
+
+            if (currentPowerUp !== POWERUPS.NONE) {
+                ctx.fillStyle = "#fdcb6e"; ctx.font = "bold 12px 'Arial'";
+                ctx.fillText(`🛡️ STATUS: ${currentPowerUp}-SHIELD`, 20, 70);
+            }
+        }
+
+        function startGame() { score = 0; lives = 3; currentLevel = 1; initLevel(); currentState = STATES.PLAYING; }
+        function initLevel() { player.x = 60; player.y = 100; player.vx = 0; player.vy = 0; cameraX = 0; spawnEntitiesForLevel(); }
+        function triggerLevelTransition() { if (currentLevel < 10) { currentState = STATES.L_TRANSITION; transitionTimer = 0; } else { currentState = STATES.WIN; } }
+        function playerDie() { lives--; if (lives > 0) currentState = STATES.DEATH; else currentState = STATES.GAMEOVER; }
+        function respawn() { initLevel(); currentState = STATES.PLAYING; }
+        function resetToMenu() { currentState = STATES.MENU; }
+
+        function loop() {
+            requestAnimationFrame(loop);
+            ctx.clearRect(0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
+            globalAnimFrame++;
+
+            if (currentState === STATES.MENU) {
+                let grad = ctx.createLinearGradient(0, 0, 0, VIRTUAL_HEIGHT);
+                grad.addColorStop(0, "#1e0503"); grad.addColorStop(1, "#0a0101");
+                ctx.fillStyle = grad; ctx.fillRect(0,0,VIRTUAL_WIDTH,VIRTUAL_HEIGHT);
+                
+                ctx.save(); ctx.shadowBlur = 20; ctx.shadowColor = "#ff4d4d";
+                ctx.fillStyle = "#ff4400"; ctx.font = "bold 38px 'Impact'"; ctx.textAlign = "center";
+                ctx.fillText("SUPER MONKEY BROS 3", VIRTUAL_WIDTH/2, 95);
+                ctx.restore();
+                
+                ctx.fillStyle = "#ecf0f1"; ctx.font = "14px 'Arial'";
+                ctx.fillText("WÄHLE DEINEN START-SKIN (Taste 1-3):", VIRTUAL_WIDTH/2, 160);
+
+                ctx.fillStyle = selectedSkin === SKINS.NORMAL ? "#ffd700" : "#7f8c8d";
+                ctx.fillText(`[1] 🐒 BRAUNER AFFE (CLASSIC)`, VIRTUAL_WIDTH/2, 195);
+                ctx.fillStyle = selectedSkin === SKINS.CYBER ? "#00cec9" : "#7f8c8d";
+                ctx.fillText(`[2] 🤖 CYBER MONKEY (BLAU)`, VIRTUAL_WIDTH/2, 225);
+                ctx.fillStyle = selectedSkin === SKINS.FIRE ? "#ff7675" : "#7f8c8d";
+                ctx.fillText(`[3] 🔥 MAGMA MONKEY (ROT)`, VIRTUAL_WIDTH/2, 255);
+
+                ctx.fillStyle = "#f1c40f"; ctx.font = "italic 13px 'Arial'";
+                ctx.fillText("Fähigkeiten: Wasser (Schild) | Feuer (E/X schießen) | Wind (Gleiten in Luft) | Gold (Alles!)", VIRTUAL_WIDTH/2, 310);
+
+                ctx.fillStyle = "#ffffff"; ctx.font = "bold 15px 'Arial'";
+                ctx.fillText("[ DRÜCKE LEERTASTE ZUM STARTEN ]", VIRTUAL_WIDTH/2, 365);
+            }
+
+            else if (currentState === STATES.PLAYING) {
+                player.update(); boss.update(); updateEntities();
+                if (player.x - 200 > cameraX) cameraX = player.x - 200;
+
+                const map = LEVEL_DATA[currentLevel];
+                if (map) {
+                    const maxCam = (map[0].length * TILE_SIZE) - VIRTUAL_WIDTH;
+                    if (cameraX > maxCam) cameraX = maxCam;
+                    if (cameraX < 0) cameraX = 0;
+                }
+
+                drawMap(); drawItems(); drawEnemies(); player.draw(); drawHUD();
+            }
+
+            else if (currentState === STATES.L_TRANSITION) {
+                ctx.fillStyle = "#0a0101"; ctx.fillRect(0,0,VIRTUAL_WIDTH,VIRTUAL_HEIGHT);
+                ctx.fillStyle = "#fff"; ctx.font = "bold 20px 'Arial'"; ctx.textAlign = "center";
+                transitionTimer++;
+                ctx.fillText(`WELT ${currentLevel} BEENDET!`, VIRTUAL_WIDTH/2, 180);
+                ctx.fillStyle = "#f1c40f"; ctx.font = "14px 'Arial'";
+                ctx.fillText("Nächstes Tor öffnet sich...", VIRTUAL_WIDTH/2, 220);
+                if (transitionTimer > 65) { currentLevel++; initLevel(); currentState = STATES.PLAYING; }
+            }
+
+            else if (currentState === STATES.DEATH) {
+                ctx.fillStyle = "#2c0b07"; ctx.fillRect(0,0,VIRTUAL_WIDTH,VIRTUAL_HEIGHT);
+                ctx.fillStyle = "#ff7675"; ctx.font = "bold 16px 'Arial'"; ctx.textAlign = "center";
+                ctx.fillText(`KO! NOCH ${lives} LEBEN.`, VIRTUAL_WIDTH/2, 180);
+                ctx.fillStyle = "#fff"; ctx.fillText("[ DRÜCKE LEERTASTE FÜR RESPAWN ]", VIRTUAL_WIDTH/2, 230);
+            }
+
+            else if (currentState === STATES.GAMEOVER) {
+                ctx.fillStyle = "#000"; ctx.fillRect(0,0,VIRTUAL_WIDTH,VIRTUAL_HEIGHT);
+                ctx.fillStyle = "#d63031"; ctx.font = "bold 28px 'Impact'"; ctx.textAlign = "center";
+                ctx.fillText("GAME OVER 💀", VIRTUAL_WIDTH/2, 180);
+                ctx.fillStyle = "#fff"; ctx.font = "14px 'Arial'"; ctx.fillText("[ DRÜCKE LEERTASTE FÜR HAUPTMENÜ ]", VIRTUAL_WIDTH/2, 240);
+            }
+
+            else if (currentState === STATES.WIN) {
+                ctx.fillStyle = "#fdcb6e"; ctx.fillRect(0,0,VIRTUAL_WIDTH,VIRTUAL_HEIGHT);
+                ctx.fillStyle = "#2d3436"; ctx.font = "bold 32px 'Impact'"; ctx.textAlign = "center";
+                ctx.fillText("🏆 GORILLA-KÖNIG BESIEGT! 🏆", VIRTUAL_WIDTH/2, 140);
+                ctx.font = "bold 16px 'Arial'";
+                ctx.fillText(`Du hast das goldene Schloss geknackt! Final-Score: ${score}`, VIRTUAL_WIDTH/2, 200);
+                ctx.fillText("[ DRÜCKE LEERTASTE FÜR HAUPTMENÜ ]", VIRTUAL_WIDTH/2, 280);
+            }
+        }
+
+        resizeCanvas();
+        loop();
+    </script>
 </body>
 </html>
